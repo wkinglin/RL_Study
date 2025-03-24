@@ -9,6 +9,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import rl_utils
 from PIL import Image  # 确保在文件顶部导入
+import os
 
 class ReplayBuffer:
     ''' 经验回放池 '''
@@ -33,7 +34,12 @@ class ConvolutionalQnet(torch.nn.Module):
         self.conv1 = torch.nn.Conv2d(in_channels, 32, kernel_size=8, stride=4)
         self.conv2 = torch.nn.Conv2d(32, 64, kernel_size=4, stride=2)
         self.conv3 = torch.nn.Conv2d(64, 64, kernel_size=3, stride=1)
-        self.fc4 = torch.nn.Linear(7 * 7 * 64, 512)
+        # 计算卷积后的特征图大小
+        # 输入: 210x160
+        # conv1: (210-8)/4 + 1 = 51, (160-8)/4 + 1 = 39
+        # conv2: (51-4)/2 + 1 = 24, (39-4)/2 + 1 = 18
+        # conv3: (24-3)/1 + 1 = 22, (18-3)/1 + 1 = 16
+        self.fc4 = torch.nn.Linear(64 * 22 * 16, 512)
         self.head = torch.nn.Linear(512, action_dim)
 
     def forward(self, x):
@@ -41,6 +47,7 @@ class ConvolutionalQnet(torch.nn.Module):
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
+        x = x.view(x.size(0), -1)  # 展平
         x = F.relu(self.fc4(x))
         return self.head(x)
 
@@ -60,50 +67,60 @@ class DQN:
     def __init__(self, state_dim, hidden_dim, action_dim, learning_rate, gamma,
                  epsilon, target_update, device):
         self.action_dim = action_dim
-        self.q_net = ConvolutionalQnet(state_dim, hidden_dim,
-                          self.action_dim).to(device)  # Q网络
+        # Q网络
+        # self.q_net = Qnet(state_dim, hidden_dim,self.action_dim).to(device)  
+        self.q_net = ConvolutionalQnet(self.action_dim, 3).to(device)  
+
         # 目标网络
-        self.target_q_net = ConvolutionalQnet(state_dim, hidden_dim,
-                                 self.action_dim).to(device)
+        # self.target_q_net = Qnet(state_dim, hidden_dim,self.action_dim).to(device)
+        self.target_q_net = ConvolutionalQnet(self.action_dim, 3).to(device)  
         # 使用Adam优化器
-        self.optimizer = torch.optim.Adam(self.q_net.parameters(),
-                                          lr=learning_rate)
+        self.optimizer = torch.optim.Adam(self.q_net.parameters(),lr=learning_rate)
         self.gamma = gamma  # 折扣因子
         self.epsilon = epsilon  # epsilon-贪婪策略
         self.target_update = target_update  # 目标网络更新频率
         self.count = 0  # 计数器,记录更新次数
         self.device = device
 
-    def preprocess_state(self, state):
-        # 将RGB图像转为灰度图
-        gray = np.mean(state, axis=2).astype(np.uint8)
-        # 调整大小为较小的分辨率，例如84x84
-        resized = np.array(Image.fromarray(gray).resize((84, 84)))
-        # 归一化像素值
-        normalized = resized / 255.0
-        return normalized.flatten()  # 展平为一维向量
-
     def take_action(self, state):  # epsilon-贪婪策略采取动作
         if np.random.random() < self.epsilon:
             action = np.random.randint(self.action_dim)
         else:
-            # 使用预处理函数
-            # state_processed = self.preprocess_state(state)
+            # 确保state是numpy数组
+            if not isinstance(state, np.ndarray):
+                state = np.array(state)
+            
+            # 打印state的形状以进行调试
+            # print("Original state shape:", state.shape)
+            
             state_tensor = torch.tensor(state, dtype=torch.float).to(self.device)
+            # print("State tensor shape before permute:", state_tensor.shape)
+            
+            # 调整维度顺序从(H, W, C)到(C, H, W)并添加batch维度
+            state_tensor = state_tensor.permute(2, 0, 1).unsqueeze(0)
+            # print("State tensor shape after permute:", state_tensor.shape)
+            
             action = self.q_net(state_tensor).argmax().item()
         return action
 
     def update(self, transition_dict):
+        # 处理状态维度
         states = torch.tensor(transition_dict['states'],
-                              dtype=torch.float).to(self.device)
+                            dtype=torch.float).to(self.device)
+        # 调整维度从(batch, H, W, C)到(batch, C, H, W)
+        states = states.permute(0, 3, 1, 2)
+        
+        next_states = torch.tensor(transition_dict['next_states'],
+                                 dtype=torch.float).to(self.device)
+        # 同样调整next_states的维度
+        next_states = next_states.permute(0, 3, 1, 2)
+        
         actions = torch.tensor(transition_dict['actions']).view(-1, 1).to(
             self.device)
         rewards = torch.tensor(transition_dict['rewards'],
                                dtype=torch.float).view(-1, 1).to(self.device)
-        next_states = torch.tensor(transition_dict['next_states'],
-                                   dtype=torch.float).to(self.device)
         dones = torch.tensor(transition_dict['dones'],
-                             dtype=torch.float).view(-1, 1).to(self.device)
+                           dtype=torch.float).view(-1, 1).to(self.device)
 
         q_values = self.q_net(states).gather(1, actions)  # Q值
         # 下个状态的最大Q值
@@ -121,7 +138,7 @@ class DQN:
 
 # 超参数
 lr = 2e-3
-num_episodes = 1000
+num_episodes = 100
 hidden_dim = 128
 gamma = 0.98
 epsilon = 0.01
@@ -130,22 +147,31 @@ buffer_size = 10000
 minimal_size = 500
 batch_size = 64
 total_reward = 0
+save_interval = 100  # 每100个episode保存一次模型
 
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 gym.register_envs(ale_py)
-env = gym.make("ALE/Pong-v5", render_mode="human")
-obs = env.reset()
+# env = gym.make("ALE/Pong-v5", render_mode="human")
+env = gym.make("ALE/Pong-v5", render_mode="rgb_array")
+obs, info = env.reset() #obs是numpy数组
 
 random.seed(0)
 np.random.seed(0)
 # env.seed(0)
 torch.manual_seed(0)
 
+# 创建保存模型的目录
+if not os.path.exists('models'):
+    os.makedirs('models')
+
 replay_buffer = ReplayBuffer(buffer_size)
-# state_dim = env.observation_space.shape[0]
-state_dim = 84 * 84
+state_dim = env.observation_space.shape
+# state_dim = 84 * 84
 action_dim = env.action_space.n
+print(state_dim)
+print(action_dim)
+
 agent = DQN(state_dim, hidden_dim, action_dim, lr, gamma, epsilon,
             target_update, device)
 
@@ -155,7 +181,7 @@ for i in range(10):
         for i_episode in range(int(num_episodes / 10)):
             # env.render()
             episode_return = 0
-            state = env.reset(seed=0)
+            state, info = env.reset(seed=0)
             done = False
 
             while not done:
@@ -177,6 +203,19 @@ for i in range(10):
                     }
                     agent.update(transition_dict)
             return_list.append(episode_return)
+            
+            # 定期保存模型
+            if (i_episode + 1) % save_interval == 0:
+                save_path = f'models/dqn_pong_episode_{num_episodes/10 * i + i_episode + 1}.pth'
+                torch.save({
+                    'episode': num_episodes/10 * i + i_episode + 1,
+                    'model_state_dict': agent.q_net.state_dict(),
+                    'target_model_state_dict': agent.target_q_net.state_dict(),
+                    'optimizer_state_dict': agent.optimizer.state_dict(),
+                    'return_list': return_list,
+                }, save_path)
+                print(f'\nModel saved to {save_path}')
+            
             if (i_episode + 1) % 10 == 0:
                 pbar.set_postfix({
                     'episode':
@@ -187,3 +226,14 @@ for i in range(10):
             pbar.update(1)
     
 print(f"Total reward: {total_reward}")
+
+# 保存最终的模型
+final_save_path = 'models/dqn_pong_final.pth'
+torch.save({
+    'episode': num_episodes,
+    'model_state_dict': agent.q_net.state_dict(),
+    'target_model_state_dict': agent.target_q_net.state_dict(),
+    'optimizer_state_dict': agent.optimizer.state_dict(),
+    'return_list': return_list,
+}, final_save_path)
+print(f'\nFinal model saved to {final_save_path}')
