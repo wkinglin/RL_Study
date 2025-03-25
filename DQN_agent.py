@@ -135,3 +135,5 @@ class DQN:
             self.target_q_net.load_state_dict(
                 self.q_net.state_dict())  # 更新目标网络
         self.count += 1
+
+        return dqn_loss.item()
