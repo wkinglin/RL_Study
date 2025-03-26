@@ -3,8 +3,9 @@ __pycache__/
 *.pth
 pong_log/
 SB3_DDQN_pong_log/
+SB3_DDQN_models/
 SB3_DQN_pong_log/
-SB3_models/
+SB3_DQN_models/
 stableBaseline3Model/
 stable_baselines3_log/
 stable_baseline_pong_log/

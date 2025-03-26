@@ -67,48 +67,47 @@ class DoubleDQN(DQN):
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/loss", np.mean(losses))
 
+env = gym.make("ALE/Pong-v5", render_mode="human")
 
-env = gym.make("ALE/Pong-v5", render_mode="rgb_array")
+# 推理模型
+def test_model(path):
+    model = DoubleDQN.load(path)
 
-# 训练 Double DQN 模型
-model = DoubleDQN(
-    "CnnPolicy", 
-    env, 
-    verbose=1, 
-    buffer_size=10000,  # 增加经验回放缓冲区
-    learning_rate=1e-4,  # 降低学习率，稳定训练
-    exploration_fraction=0.1,  # 控制探索衰减速率
-    exploration_final_eps=0.01,  # 最终探索率
-    target_update_interval=1000,  # 目标网络更新频率
-    train_freq=4,  # 训练频率
-    gradient_steps=1,  # 每次训练的梯度更新步数
-    batch_size=128,  # 训练时使用的批次大小
-    tensorboard_log="Sb3_DDQN_pong_log"
-)
+    obs, info = env.reset()
+    while True:
+        action, _states = model.predict(obs, deterministic=True)
+        obs, reward, terminated, truncated, info = env.step(action)
+        if terminated or truncated:
+            obs, info = env.reset()
 
-# 评估代码
-ean_reward, std_reward = evaluate_policy(
-    model,
-    model.get_env(),
-    deterministic=True,
-    n_eval_episodes=20,
-)
+def train_model():
+    # 训练 Double DQN 模型
+    model = DoubleDQN(
+        "CnnPolicy", 
+        env, 
+        verbose=1, 
+        buffer_size=10000,  # 增加经验回放缓冲区
+        learning_rate=1e-4,  # 降低学习率，稳定训练
+        exploration_fraction=0.1,  # 控制探索衰减速率
+        exploration_final_eps=0.01,  # 最终探索率
+        target_update_interval=1000,  # 目标网络更新频率
+        train_freq=4,  # 训练频率
+        gradient_steps=1,  # 每次训练的梯度更新步数
+        batch_size=128,  # 训练时使用的批次大小
+        tensorboard_log="Sb3_DDQN_pong_log"
+    )
+    # 训练模型并保存中间结果
+    for i in range(10):
+        model.learn(total_timesteps=100000, log_interval=4, reset_num_timesteps=False)
+        model.save(f"{models_dir}/dqn_pong_step_{i}")
 
-# 训练 500000 个时间步
-for i in range(5):
-    model.learn(total_timesteps=100000, log_interval=4, reset_num_timesteps=False)
-    model.save(f"{models_dir}/ddqn_pong_step_{i}")
 
-# 保存最终模型
-model.save(f"{models_dir}/ddqn_pong_final")
+def continue_train_model():
+    model = DoubleDQN.load(f"{models_dir}/ddqn_pong_step_10", env=env)
+    for i in range(10):
+        model.learn(total_timesteps=100000, log_interval=4, reset_num_timesteps=False)
+        model.save(f"{models_dir}/ddqn_pong_step_{10+i}")
+    model.save(f"{models_dir}/ddqn_pong_final")
 
-# del model # remove to demonstrate saving and loading
-
-# model = DDQN.load("stableBaseline3Model/dqn_pong")
-
-# obs, info = env.reset()
-# while True:
-#     action, _states = model.predict(obs, deterministic=True)
-#     obs, reward, terminated, truncated, info = env.step(action)
-#     if terminated or truncated:
-#         obs, info = env.reset()
+# continue_train_model()
+test_model("E:\Projects\RL\SB3_DDQN_models\ddqn_pong_step_17.zip")
