@@ -8,13 +8,27 @@ import torch
 import torch.nn.functional as F
 import os
 from DQN_agent import DQN, ReplayBuffer
+from gymnasium.wrappers import TransformObservation, FrameStackObservation
+from PIL import Image
+
+def preprocess_frame(frame):
+    """预处理单帧图像"""
+    # 裁剪图像，只保留游戏区域
+    frame = frame[18:102, :]
+    # 转换为灰度图
+    frame = np.mean(frame, axis=2).astype(np.uint8)
+    # 调整大小为84x84
+    frame = np.array(Image.fromarray(frame).resize((84, 84)))
+    # 归一化到[0,1]
+    frame = frame.astype(np.float32) / 255.0
+    return frame
 
 def continue_training(model_path, additional_episodes=500):
     # 超参数
     lr = 2e-3
     hidden_dim = 128
     gamma = 0.98
-    epsilon = 0.01  # 可以设置较小的探索率，因为模型已经有一定的经验
+    epsilon = 0.01
     target_update = 10
     buffer_size = 10000
     minimal_size = 500
@@ -23,9 +37,11 @@ def continue_training(model_path, additional_episodes=500):
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # 创建环境
-    # env = gym.make("ALE/Pong-v5", render_mode="human")
+    # 创建环境并添加包装器
     env = gym.make("ALE/Pong-v5", render_mode="rgb_array")
+    env = TransformObservation(env, preprocess_frame)  # 预处理图像
+    env = FrameStackObservation(env, 4)  # 堆叠4帧
+    
     obs, info = env.reset()
     
     # 设置随机种子
@@ -38,7 +54,7 @@ def continue_training(model_path, additional_episodes=500):
         os.makedirs('models')
     
     # 创建智能体和经验回放池
-    state_dim = env.observation_space.shape
+    state_dim = (4, 84, 84)  # 4帧，每帧84x84
     action_dim = env.action_space.n
     agent = DQN(state_dim, hidden_dim, action_dim, lr, gamma, epsilon,
                 target_update, device)
@@ -64,7 +80,6 @@ def continue_training(model_path, additional_episodes=500):
                 done = False
                 
                 while not done:
-                    # env.render()
                     action = agent.take_action(state)
                     next_state, reward, done, truncated, info = env.step(action)
                     total_reward += reward

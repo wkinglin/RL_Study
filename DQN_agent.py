@@ -34,11 +34,6 @@ class ConvolutionalQnet(torch.nn.Module):
         self.conv1 = torch.nn.Conv2d(in_channels, 32, kernel_size=8, stride=4)
         self.conv2 = torch.nn.Conv2d(32, 64, kernel_size=4, stride=2)
         self.conv3 = torch.nn.Conv2d(64, 64, kernel_size=3, stride=1)
-        # 计算卷积后的特征图大小
-        # 输入: 210x160
-        # conv1: (210-8)/4 + 1 = 51, (160-8)/4 + 1 = 39
-        # conv2: (51-4)/2 + 1 = 24, (39-4)/2 + 1 = 18
-        # conv3: (24-3)/1 + 1 = 22, (18-3)/1 + 1 = 16
         self.fc4 = torch.nn.Linear(64 * 22 * 16, 512)
         self.head = torch.nn.Linear(512, action_dim)
 
@@ -64,8 +59,9 @@ class Qnet(torch.nn.Module):
     
 class DQN:
     ''' DQN算法 '''
-    def __init__(self, state_dim, hidden_dim, action_dim, learning_rate, gamma,
-                 epsilon, target_update, device):
+    def __init__(self, env, state_dim, hidden_dim, action_dim, learning_rate, gamma,
+                 epsilon, target_update, device, mode):
+        self.env = env
         self.action_dim = action_dim
         # Q网络
         # self.q_net = Qnet(state_dim, hidden_dim,self.action_dim).to(device)  
@@ -81,25 +77,32 @@ class DQN:
         self.target_update = target_update  # 目标网络更新频率
         self.count = 0  # 计数器,记录更新次数
         self.device = device
+        self.mode = mode #train or test
 
     def take_action(self, state):  # epsilon-贪婪策略采取动作
-        if np.random.random() < self.epsilon:
-            action = np.random.randint(self.action_dim)
+        if self.mode == 'train':
+            if np.random.random() < self.epsilon:
+                action = np.random.randint(self.action_dim)
+            else:
+                # 确保state是numpy数组
+                if not isinstance(state, np.ndarray):
+                    state = np.array(state)
+                
+                state_tensor = torch.tensor(state, dtype=torch.float).to(self.device)
+                # print("State tensor shape before permute:", state_tensor.shape)
+                
+                # 调整维度顺序从(H, W, C)到(C, H, W)并添加batch维度
+                state_tensor = state_tensor.permute(2, 0, 1).unsqueeze(0)
+                # print("State tensor shape after permute:", state_tensor.shape)
+            
+                action = self.q_net(state_tensor).argmax().item()
         else:
-            # 确保state是numpy数组
-            if not isinstance(state, np.ndarray):
-                state = np.array(state)
-            
-            # 打印state的形状以进行调试
-            # print("Original state shape:", state.shape)
-            
+            state = np.array(state)
             state_tensor = torch.tensor(state, dtype=torch.float).to(self.device)
-            # print("State tensor shape before permute:", state_tensor.shape)
-            
+            # print("State tensor shape before permute:", state_tensor.shape)             
             # 调整维度顺序从(H, W, C)到(C, H, W)并添加batch维度
             state_tensor = state_tensor.permute(2, 0, 1).unsqueeze(0)
             # print("State tensor shape after permute:", state_tensor.shape)
-            
             action = self.q_net(state_tensor).argmax().item()
         return action
 
@@ -115,12 +118,11 @@ class DQN:
         # 同样调整next_states的维度
         next_states = next_states.permute(0, 3, 1, 2)
         
-        actions = torch.tensor(transition_dict['actions']).view(-1, 1).to(
-            self.device)
+        actions = torch.tensor(transition_dict['actions']).view(-1, 1).to(self.device)
         rewards = torch.tensor(transition_dict['rewards'],
                                dtype=torch.float).view(-1, 1).to(self.device)
         dones = torch.tensor(transition_dict['dones'],
-                           dtype=torch.float).view(-1, 1).to(self.device)
+                            dtype=torch.float).view(-1, 1).to(self.device)
 
         q_values = self.q_net(states).gather(1, actions)  # Q值
         # 下个状态的最大Q值
@@ -137,3 +139,14 @@ class DQN:
         self.count += 1
 
         return dqn_loss.item()
+    
+    def saveModel(num_episodes,agent,return_list,final_save_path):
+        # 保存最终的模型
+        torch.save({
+            'episode': num_episodes,
+            'model_state_dict': agent.q_net.state_dict(),
+            'target_model_state_dict': agent.target_q_net.state_dict(),
+            'optimizer_state_dict': agent.optimizer.state_dict(),
+            'return_list': return_list,
+        }, final_save_path)
+        print(f'\n model saved to {final_save_path}')
