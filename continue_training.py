@@ -9,7 +9,7 @@ import torch.nn.functional as F
 import os
 from DQN_agent import DQN, ReplayBuffer
 
-def continue_training(model_path, additional_episodes=400):
+def continue_training(model_path, additional_episodes=500):
     # 超参数
     lr = 2e-3
     hidden_dim = 128
@@ -108,7 +108,7 @@ def continue_training(model_path, additional_episodes=400):
     print(f"Total reward in continued training: {total_reward}")
     
     # 保存最终模型
-    final_save_path = f'models/dqn_pong_episode_{start_episode + additional_episodes}.pth'
+    final_save_path = f'models/dqn_pong_continue_episode_{start_episode + additional_episodes}.pth'
     torch.save({
         'episode': start_episode + additional_episodes,
         'model_state_dict': agent.q_net.state_dict(),
@@ -120,5 +120,5 @@ def continue_training(model_path, additional_episodes=400):
 
 if __name__ == "__main__":
     # 使用之前保存的模型继续训练
-    model_path = "models/dqn_pong_final.pth"  # 或者使用其他检查点
-    continue_training(model_path, additional_episodes=400)  # 继续训练100个episodes 
+    model_path = "models/dqn_pong_final_500.pth"  # 或者使用其他检查点
+    continue_training(model_path, additional_episodes=500)  # 继续训练100个episodes 

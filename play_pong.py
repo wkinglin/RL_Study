@@ -59,5 +59,5 @@ def play_pong(model_path, num_episodes=5):
 
 if __name__ == "__main__":
     # 使用保存的最终模型
-    model_path = "models/dqn_pong_final_1_100.pth"
+    model_path = "models/dqn_pong_final_500.pth"
     play_pong(model_path) 
