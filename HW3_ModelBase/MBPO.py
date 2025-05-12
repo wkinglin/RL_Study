@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 import os
 import json
 
-# 策略网络
 class PolicyNet(torch.nn.Module):
     def __init__(self, state_dim, hidden_dim, action_dim, action_bound):
         super(PolicyNet, self).__init__()
@@ -85,6 +84,7 @@ class PolicyNet(torch.nn.Module):
         action = action * self.action_bound
         
         return action, log_prob
+
 
 class QValueNet(torch.nn.Module):
     def __init__(self, state_dim, hidden_dim, action_dim):
@@ -609,94 +609,100 @@ class ReplayBuffer:
         state, action, reward, next_state, done = zip(*all_transitions)
         return np.array(state), action, reward, np.array(next_state), done
     
-real_ratio = 0.5
-num_episodes = 20
-actor_lr = 5e-3
-critic_lr = 5e-3
-alpha_lr = 1e-3
-hidden_dim = 128
-gamma = 0.98
-tau = 0.005  # 软更新参数
-buffer_size = 10000
-target_entropy = -1
-model_alpha = 0.01  # 模型损失函数中的加权权重
-
-env_name = "Hopper-v5"
-env = gym.make(env_name)
-env.reset(seed=0)
-state_dim = env.observation_space.shape[0]
-action_dim = env.action_space.shape[0]
-action_bound = env.action_space.high[0]  # 动作最大值
-print()
-
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
-rollout_batch_size = 1000
-rollout_length = 10  # 推演长度k,推荐更多尝试
-model_pool_size = rollout_batch_size * rollout_length
+if __name__ == "__main__":
 
-agent = SAC(state_dim, hidden_dim, action_dim, action_bound, actor_lr,
-            critic_lr, alpha_lr, target_entropy, tau, gamma)
-model = EnsembleDynamicsModel(state_dim, action_dim, model_alpha)
-fake_env = FakeEnv(model)
-env_pool = ReplayBuffer(buffer_size)
-model_pool = ReplayBuffer(model_pool_size)
-mbpo = MBPO(env, agent, fake_env, env_pool, model_pool, rollout_length,
-            rollout_batch_size, real_ratio, num_episodes)
+    real_ratio = 0.5
+    num_episodes = 100
+    actor_lr = 5e-4
+    critic_lr = 5e-3
+    alpha_lr = 1e-3
+    hidden_dim = 128
+    gamma = 0.98
+    tau = 0.005  # 软更新参数
+    buffer_size = 10000
+    target_entropy = -1
+    model_alpha = 0.01  # 模型损失函数中的加权权重
 
-return_list = mbpo.train()
+    env_name = "Hopper-v5"
+    env = gym.make(env_name)
+    env.reset(seed=0)
+    state_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.shape[0]
+    action_bound = env.action_space.high[0]  # 动作最大值
+    print()
 
-episodes_list = list(range(len(return_list)))
+    rollout_batch_size = 1000
+    rollout_length = 50  # 推演长度k,推荐更多尝试
+    model_pool_size = rollout_batch_size * rollout_length
 
-with open('MBPO_return.txt', 'w', encoding='utf-8') as f:
-    for i in range(len(return_list)):
-        f.write(f"{i}: 批次 {episodes_list[i]}: 回报 {return_list[i]}\n")
+    agent = SAC(state_dim, hidden_dim, action_dim, action_bound, actor_lr,
+                critic_lr, alpha_lr, target_entropy, tau, gamma)
+    model = EnsembleDynamicsModel(state_dim, action_dim, model_alpha)
+    fake_env = FakeEnv(model)
+    env_pool = ReplayBuffer(buffer_size)
+    model_pool = ReplayBuffer(model_pool_size)
+    mbpo = MBPO(env, agent, fake_env, env_pool, model_pool, rollout_length,
+                rollout_batch_size, real_ratio, num_episodes)
 
-# 保存模型参数
-print("正在保存模型参数...")
-model_save_path = "saved_models"
-if not os.path.exists(model_save_path):
-    os.makedirs(model_save_path)
+    return_list = mbpo.train()
 
-# 保存SAC智能体的策略网络和值网络
-torch.save(agent.actor.state_dict(), f"{model_save_path}/sac_actor.pth")
-torch.save(agent.critic_1.state_dict(), f"{model_save_path}/sac_critic_1.pth")
-torch.save(agent.critic_2.state_dict(), f"{model_save_path}/sac_critic_2.pth")
-torch.save(agent.target_critic_1.state_dict(), f"{model_save_path}/sac_target_critic_1.pth")
-torch.save(agent.target_critic_2.state_dict(), f"{model_save_path}/sac_target_critic_2.pth")
-torch.save(agent.log_alpha, f"{model_save_path}/sac_log_alpha.pth")
+    episodes_list = list(range(len(return_list)))
 
-# 保存环境动力学模型
-torch.save(model.model.state_dict(), f"{model_save_path}/dynamics_model.pth")
+    with open('MBPO_return.txt', 'w', encoding='utf-8') as f:
+        for i in range(len(return_list)):
+            f.write(f"{i}: 批次 {episodes_list[i]}: 回报 {return_list[i]}\n")
 
-print(f"模型参数已保存到 {model_save_path} 目录")
+    # 保存模型参数
+    print("正在保存模型参数...")
+    model_save_path = "MBPO_models"
+    if not os.path.exists(model_save_path):
+        os.makedirs(model_save_path)
 
-# 保存超参数配置
-hyperparams = {
-    "real_ratio": real_ratio,
-    "num_episodes": num_episodes,
-    "actor_lr": actor_lr,
-    "critic_lr": critic_lr,
-    "alpha_lr": alpha_lr,
-    "hidden_dim": hidden_dim,
-    "gamma": gamma,
-    "tau": tau,
-    "buffer_size": buffer_size,
-    "target_entropy": target_entropy,
-    "model_alpha": model_alpha,
-    "rollout_batch_size": rollout_batch_size,
-    "rollout_length": rollout_length,
-    "env_name": env_name
-}
+    # 保存SAC智能体的策略网络和值网络
+    torch.save(agent.actor.state_dict(), f"{model_save_path}/sac_actor.pth")
+    torch.save(agent.critic_1.state_dict(), f"{model_save_path}/sac_critic_1.pth")
+    torch.save(agent.critic_2.state_dict(), f"{model_save_path}/sac_critic_2.pth")
+    torch.save(agent.target_critic_1.state_dict(), f"{model_save_path}/sac_target_critic_1.pth")
+    torch.save(agent.target_critic_2.state_dict(), f"{model_save_path}/sac_target_critic_2.pth")
+    torch.save(agent.log_alpha, f"{model_save_path}/sac_log_alpha.pth")
 
-import json
-with open(f"{model_save_path}/hyperparams.json", 'w') as f:
-    json.dump(hyperparams, f, indent=4)
+    # 保存环境动力学模型
+    torch.save(model.model.state_dict(), f"{model_save_path}/dynamics_model.pth")
 
-plt.plot(episodes_list, return_list)
-plt.xlabel('Episodes')
-plt.ylabel('Returns')
-plt.title('MBPO on {}'.format(env_name))
-plt.savefig(f"{model_save_path}/learning_curve.png")
-plt.show()
+    print(f"模型参数已保存到 {model_save_path} 目录")
 
+    # 保存超参数配置
+    hyperparams = {
+        "real_ratio": real_ratio,
+        "num_episodes": num_episodes,
+        "actor_lr": actor_lr,
+        "critic_lr": critic_lr,
+        "alpha_lr": alpha_lr,
+        "hidden_dim": hidden_dim,
+        "gamma": gamma,
+        "tau": tau,
+        "buffer_size": buffer_size,
+        "target_entropy": target_entropy,
+        "model_alpha": model_alpha,
+        "rollout_batch_size": rollout_batch_size,
+        "rollout_length": rollout_length,
+        "env_name": env_name
+    }
+
+    import json
+    with open(f"{model_save_path}/hyperparams.json", 'w') as f:
+        json.dump(hyperparams, f, indent=4)
+
+    # 保存回报列表
+    with open(f"{model_save_path}/return_list.txt", 'w', encoding='utf-8') as f:
+        for i, ret in enumerate(return_list):
+            f.write(f"{i}, {ret}\n")
+
+    plt.plot(episodes_list, return_list)
+    plt.xlabel('Episodes')
+    plt.ylabel('Returns')
+    plt.title('MBPO on {}'.format(env_name))
+    plt.savefig(f"{model_save_path}/learning_curve.png")
+    plt.show()

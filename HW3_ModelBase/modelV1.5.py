@@ -11,126 +11,60 @@ from tqdm import tqdm
 from scipy.stats import truncnorm
 from torch.utils.data import DataLoader, TensorDataset
 
-# 策略网络
-class PolicyNet(torch.nn.Module):
-    def __init__(self, state_dim, hidden_dim, action_dim, action_bound):
-        super(PolicyNet, self).__init__()
-        self.fc1 = torch.nn.Linear(state_dim, hidden_dim)
-        self.fc_mu = torch.nn.Linear(hidden_dim, action_dim)
-        self.fc_std = torch.nn.Linear(hidden_dim, action_dim)
-        self.action_bound = action_bound
-        
-        # 添加层归一化
-        self.layer_norm = torch.nn.LayerNorm(hidden_dim)
-        
-        # 初始化权重
-        self._init_weights()
-        
-    def _init_weights(self):
-        # 使用 Xavier 初始化
-        torch.nn.init.xavier_uniform_(self.fc1.weight, gain=0.1)
-        torch.nn.init.constant_(self.fc1.bias, 0.0)
-        torch.nn.init.xavier_uniform_(self.fc_mu.weight, gain=0.1)
-        torch.nn.init.constant_(self.fc_mu.bias, 0.0)
-        torch.nn.init.xavier_uniform_(self.fc_std.weight, gain=0.1)
-        torch.nn.init.constant_(self.fc_std.bias, 0.0)
-
-    def forward(self, x):
-        # 检查输入中是否包含 NaN 值
-        if torch.isnan(x).any():
-            print(f"输入包含 NaN 值: {x}")
-            raise ValueError("PolicyNet输入张量包含 NaN 值")
-            
-        # 对输入进行归一化
-        x = (x - x.mean()) / x.std()
-        
-        # 通过第一个全连接层
-        xx = self.fc1(x)
-        
-        # 添加数值稳定化
-        # xx = torch.clamp(xx, min=-100, max=100)
-        
-        # 应用 ReLU 和层归一化
-        # xx = F.relu(self.layer_norm(xx))
-        xx = F.softplus(self.layer_norm(xx))
-        # xx = F.softplus(xx)
-        # xx = F.relu(xx)
-        
-        
-        if torch.isnan(xx).any():
-            print(f"包含 NaN 值: {xx}")
-            print(f"Input x max: {x.max()}, min: {x.min()}")
-            print(f"fc1 weight max: {self.fc1.weight.max()}, min: {self.fc1.weight.min()}")
-            print(f"fc1 bias max: {self.fc1.bias.max()}, min: {self.fc1.bias.min()}")
-            raise ValueError("PolicyNet在经过fc1后张量包含 NaN 值")
-
-        # 计算均值和标准差
-        mu = self.fc_mu(xx)
-        std = F.softplus(self.fc_std(xx))
-        
-        # 检查中间结果是否包含 NaN 值
-        if torch.isnan(mu).any() or torch.isnan(std).any():
-            print(f"中间结果包含 NaN 值 - mu: {mu}, std: {std}")
-            print(f"Input x max: {x.max()}, min: {x.min()}")
-            print(f"xx max: {xx.max()}, min: {xx.min()}")
-            raise ValueError("PolicyNet中间计算结果包含 NaN 值")
-            
-        dist = Normal(mu, std)
-        normal_sample = dist.rsample()  # rsample()是重参数化采样函数
-        log_prob = dist.log_prob(normal_sample)
-        action = torch.tanh(normal_sample)  # 计算tanh_normal分布的对数概率密度
-        log_prob = log_prob - torch.log(1 - torch.tanh(action).pow(2) + 1e-7)
-        action = action * self.action_bound
-        
-        return action, log_prob
-
-# 价值网络
-class QValueNet(torch.nn.Module):
-    def __init__(self, state_dim, hidden_dim, action_dim):
-        super(QValueNet, self).__init__()
-        self.fc1 = torch.nn.Linear(state_dim + action_dim, hidden_dim)
-        self.fc2 = torch.nn.Linear(hidden_dim, 1)
-
-    def forward(self, x, a):
-        # 确保x和a的批处理维度相同
-        if x.shape[0] != a.shape[0]:
-            raise ValueError(f"批处理大小不匹配: 状态批大小={x.shape[0]}, 动作批大小={a.shape[0]}")
-            
-        # 检查并修正a的维度
-        if len(a.shape) == 1:
-            a = a.unsqueeze(-1)  # 添加动作维度
-        elif len(a.shape) > 2:
-            a = a.view(a.shape[0], -1)  # 将动作扁平化为(batch_size, action_dim)
-            
-        cat = torch.cat([x, a], dim=1)  # 拼接状态和动作
-        x = F.relu(self.fc1(cat))
-        return self.fc2(x)
-
 class DynamicsModel(nn.Module):
     """基于神经网络的动力学模型"""
-    def __init__(self, state_dim, action_dim, hidden_dim=128):
+    def __init__(self, state_dim, action_dim, hidden_dim=256, device=None):
         super(DynamicsModel, self).__init__()
         self.state_dim = state_dim
         self.action_dim = action_dim
+        self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        # 状态转移网络
+        # 状态转移网络 - 使用更深的网络结构
         self.dynamics_net = nn.Sequential(
+            nn.Linear(state_dim + action_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, state_dim)
+        ).to(self.device)
+        
+        # 奖励预测网络 - 添加更多层
+        self.reward_net = nn.Sequential(
             nn.Linear(state_dim + action_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, state_dim)
-        )
-        
-        # 奖励预测网络
-        self.reward_net = nn.Sequential(
-            nn.Linear(state_dim + action_dim, hidden_dim),
-            nn.ReLU(),
             nn.Linear(hidden_dim, 1)
-        )
+        ).to(self.device)
+        
+        # 初始化权重
+        self.apply(self._init_weights)
     
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.orthogonal_(module.weight, gain=np.sqrt(2))
+            if module.bias is not None:
+                module.bias.data.zero_()
+
     def forward(self, state, action):
         """前向传播，预测下一个状态和奖励"""
+        # 确保输入在正确的设备上
+        if not state.is_cuda and self.device.type == 'cuda':
+            state = state.to(self.device)
+        if not action.is_cuda and self.device.type == 'cuda':
+            action = action.to(self.device)
+            
         x = torch.cat([state, action], dim=-1)
         next_state_delta = self.dynamics_net(x)
         next_state = state + next_state_delta  # 预测状态变化量
@@ -139,20 +73,54 @@ class DynamicsModel(nn.Module):
     
     def predict_next_state(self, state, action):
         """预测下一个状态"""
-        state_tensor = torch.FloatTensor(state).unsqueeze(0)
-        action_tensor = torch.FloatTensor(action).unsqueeze(0)
+        # 确保输入在正确的设备上
+        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+        action_tensor = torch.FloatTensor(action).unsqueeze(0).to(self.device)
+        
         with torch.no_grad():
-            # next_state, _ = self.forward(state_tensor, action_tensor)
-            next_state = self.forward(state_tensor, action_tensor)
-        return next_state.squeeze(0).numpy()
+            next_state, _ = self.forward(state_tensor, action_tensor)
+        return next_state.squeeze(0).cpu().numpy()
     
     def predict_reward(self, state, action):
         """预测奖励"""
-        state_tensor = torch.FloatTensor(state).unsqueeze(0)
-        action_tensor = torch.FloatTensor(action).unsqueeze(0)
+        # 确保输入在正确的设备上
+        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+        action_tensor = torch.FloatTensor(action).unsqueeze(0).to(self.device)
+        
         with torch.no_grad():
             _, reward = self.forward(state_tensor, action_tensor)
         return reward.item()
+        
+    def compute_rollout_loss(self, initial_states, actions, target_states, rollout_steps=3):
+        """计算多步rollout的损失
+        
+        参数:
+            initial_states: 初始状态张量 [batch_size, state_dim]
+            actions: 动作序列张量 [batch_size, rollout_steps, action_dim]
+            target_states: 目标状态序列张量 [batch_size, rollout_steps, state_dim]
+            rollout_steps: rollout的步数
+            
+        返回:
+            rollout_loss: 多步预测的损失
+        """
+        current_states = initial_states
+        rollout_loss = 0
+        
+        for step in range(rollout_steps):
+            # 获取当前步骤的动作
+            current_actions = actions[:, step]
+            
+            # 预测下一个状态
+            next_states, _ = self.forward(current_states, current_actions)
+            
+            # 计算当前步骤的损失
+            step_loss = F.mse_loss(next_states, target_states[:, step])
+            rollout_loss += step_loss
+            
+            # 更新当前状态
+            current_states = next_states
+            
+        return rollout_loss / rollout_steps
 
 class CEM:
     def __init__(self, n_sequence, elite_ratio, fake_env, upper_bound,
@@ -205,56 +173,184 @@ class iLQRPlanner:
         self.reg_factor = reg_factor     # 正则化因子
         self.convergence_threshold = convergence_threshold  # 收敛阈值
         
-        # 代价函数参数
-        self.Q = np.eye(num_states) * 1.0     # 状态代价矩阵
-        self.R = np.eye(num_actions) * 0.1    # 控制代价矩阵
-        self.Qf = np.eye(num_states) * 10.0   # 终端状态代价矩阵
+        # 代价函数参数 - 调整权重以鼓励向前移动
+        self.Q = np.eye(num_states) * 0.1     # 状态代价矩阵 - 降低权重
+        self.R = np.eye(num_actions) * 0.01   # 控制代价矩阵 - 降低权重
+        self.Qf = np.eye(num_states) * 1.0    # 终端状态代价矩阵
+        
+        # 特别关注x位置和速度
+        self.Q[0, 0] = 0.0  # x位置权重
+        self.Q[5, 5] = 1.0  # x速度权重
+        self.Qf[0, 0] = 0.0  # 终端x位置权重
+        self.Qf[5, 5] = 10.0  # 终端x速度权重
         
         # 动作边界
         self.action_low = action_low
         self.action_high = action_high
     
-    def cost_function(self, state, action, target_state=None):
+    def cost_function(self, state, action, next_state, next_action, reward_fn=None):
         """计算状态-动作对的代价"""
-        # 状态代价: (x-x_target)^T Q (x-x_target)
-        state_cost = 0
-        if target_state is not None:
-            state_diff = state - target_state
-            state_cost = np.dot(state_diff, np.dot(self.Q, state_diff))
-            
-        # 控制代价: u^T R u
-        action_cost = np.dot(action, np.dot(self.R, action))
-        
-        return state_cost + action_cost
-    
-    def terminal_cost(self, state, target_state=None):
+        next_state_reward = reward_fn(next_state, next_action)
+        current_reward = reward_fn(state, action)
+        cost = current_reward - next_state_reward
+        return cost
+
+    def terminal_cost(self, state, target_state=None, reward_fn=None):
         """计算终端状态的代价"""
         if target_state is None:
             return 0
             
-        # 终端代价: (x-x_target)^T Qf (x-x_target)
-        state_diff = state - target_state
-        terminal_cost = np.dot(state_diff, np.dot(self.Qf, state_diff))
+        # 终端代价
+        action = np.zeros(self.num_actions)
+        
+        target_reward = reward_fn(target_state, action)
+        current_reward = reward_fn(state, action)
+        terminal_cost = current_reward - target_reward 
         
         return terminal_cost
     
-    def quadratize_cost(self, x, u, target_state=None):
+    def quadratize_cost(self, x, u, target_state=None, reward_fn=None):
         """二次化状态-动作代价函数"""
-        # 代价函数的二阶导数(Hessian)
-        q = self.Q if target_state is not None else np.zeros_like(self.Q)
-        r = self.R
-        
-        # 代价函数的一阶导数(梯度)
-        if target_state is not None:
-            q_x = np.dot(self.Q, x - target_state)
-        else:
-            q_x = np.zeros(self.num_states)
+        # 定义求导函数
+        def grad_x(f, x, u, h=1e-4):
+            """计算函数f关于x的梯度"""
+            n = len(x)
+            grad = np.zeros(n)
+            for i in range(n):
+                x_plus = x.copy()
+                x_minus = x.copy()
+                x_plus[i] += h
+                x_minus[i] -= h
+                grad[i] = (f(x_plus, u) - f(x_minus, u)) / (2 * h)
+            return grad
             
-        r_u = np.dot(self.R, u)
+        def grad_u(f, x, u, h=1e-4):
+            """计算函数f关于u的梯度"""
+            m = len(u)
+            grad = np.zeros(m)
+            for i in range(m):
+                u_plus = u.copy()
+                u_minus = u.copy()
+                u_plus[i] += h
+                u_minus[i] -= h
+                grad[i] = (f(x, u_plus) - f(x, u_minus)) / (2 * h)
+            return grad
+            
+        def hess_xx(f, x, u, h=1e-4):
+            """计算函数f关于x的Hessian矩阵"""
+            n = len(x)
+            H = np.zeros((n, n))
+            for i in range(n):
+                for j in range(n):
+                    x_pp = x.copy()
+                    x_pm = x.copy()
+                    x_mp = x.copy()
+                    x_mm = x.copy()
+                    
+                    x_pp[i] += h
+                    x_pp[j] += h
+                    
+                    x_pm[i] += h
+                    x_pm[j] -= h
+                    
+                    x_mp[i] -= h
+                    x_mp[j] += h
+                    
+                    x_mm[i] -= h
+                    x_mm[j] -= h
+                    
+                    H[i, j] = (f(x_pp, u) - f(x_pm, u) - f(x_mp, u) + f(x_mm, u)) / (4 * h * h)
+            return H
+            
+        def hess_uu(f, x, u, h=1e-4):
+            """计算函数f关于u的Hessian矩阵"""
+            m = len(u)
+            H = np.zeros((m, m))
+            for i in range(m):
+                for j in range(m):
+                    u_pp = u.copy()
+                    u_pm = u.copy()
+                    u_mp = u.copy()
+                    u_mm = u.copy()
+                    
+                    u_pp[i] += h
+                    u_pp[j] += h
+                    
+                    u_pm[i] += h
+                    u_pm[j] -= h
+                    
+                    u_mp[i] -= h
+                    u_mp[j] += h
+                    
+                    u_mm[i] -= h
+                    u_mm[j] -= h
+                    
+                    H[i, j] = (f(x, u_pp) - f(x, u_pm) - f(x, u_mp) + f(x, u_mm)) / (4 * h * h)
+            return H
+            
+        def hess_xu(f, x, u, h=1e-4):
+            """计算函数f关于x和u的交叉Hessian矩阵"""
+            n = len(x)
+            m = len(u)
+            H = np.zeros((n, m))
+            for i in range(n):
+                for j in range(m):
+                    x_p = x.copy()
+                    x_m = x.copy()
+                    u_p = u.copy()
+                    u_m = u.copy()
+                    
+                    x_p[i] += h
+                    x_m[i] -= h
+                    u_p[j] += h
+                    u_m[j] -= h
+                    
+                    H[i, j] = (f(x_p, u_p) - f(x_p, u_m) - f(x_m, u_p) + f(x_m, u_m)) / (4 * h * h)
+            return H
         
-        return q, r, q_x, r_u
+        # 代价函数 (负的奖励函数)
+        if reward_fn is not None:
+            cost_fn = lambda s, a: -reward_fn(s, a)
+            
+            # 计算一阶导数（梯度）
+            q_x = grad_x(cost_fn, x, u)  # 代价关于状态的梯度
+            r_u = grad_u(cost_fn, x, u)  # 代价关于动作的梯度
+            
+            # 计算二阶导数（Hessian）
+            q = hess_xx(cost_fn, x, u)    # 代价关于状态的Hessian
+            r = hess_uu(cost_fn, x, u)    # 代价关于动作的Hessian
+            cross = hess_xu(cost_fn, x, u)  # 代价关于状态和动作的交叉Hessian
+            
+            # 确保Hessian矩阵正定（iLQR要求）
+            # 添加小的正则化项
+            min_eig_q = np.min(np.linalg.eigvals(q))
+            min_eig_r = np.min(np.linalg.eigvals(r))
+            
+            if min_eig_q < 0:
+                q += np.eye(len(x)) * (abs(min_eig_q) + 1e-4)
+            if min_eig_r < 0:
+                r += np.eye(len(u)) * (abs(min_eig_r) + 1e-4)
+                
+            return q, r, q_x, r_u, cross.T  # 返回交叉项的转置，使其符合l_ux的方向
+        else:
+            # 如果没有reward_fn，使用预定义的Q和R矩阵
+            q = self.Q if target_state is not None else np.zeros_like(self.Q)
+            r = self.R
+            
+            # 代价函数的一阶导数(梯度)
+            if target_state is not None:
+                q_x = np.dot(self.Q, x - target_state)
+            else:
+                q_x = np.zeros(self.num_states)
+                
+            r_u = np.dot(self.R, u)
+            
+            # 交叉项为零
+            cross = np.zeros((self.num_actions, self.num_states))
+            
+            return q, r, q_x, r_u, cross
     
-    def backward_pass(self, x_seq, u_seq, A, B, target_state=None):
+    def backward_pass(self, x_seq, u_seq, A_seq, B_seq, target_state=None, reward_fn=None):
         """iLQR的向后传递，计算增益矩阵K和k"""
         N = len(u_seq)  # 控制序列的长度
         
@@ -275,28 +371,26 @@ class iLQRPlanner:
         for t in range(N-1, -1, -1):
             x_t = x_seq[t]
             u_t = u_seq[t]
+            A_t = A_seq[t]
+            B_t = B_seq[t]
             
             # 获取二次化代价函数
-            q_t, r_t, q_x_t, r_u_t = self.quadratize_cost(x_t, u_t, target_state)
+            q_t, r_t, q_x_t, r_u_t, cross_t = self.quadratize_cost(x_t, u_t, target_state, reward_fn)
             
             # 计算Q函数的二次近似参数
-            Q_x = q_x_t + np.dot(A.T, V_x)
-            Q_u = r_u_t + np.dot(B.T, V_x)
-            Q_xx = q_t + np.dot(A.T, np.dot(V_xx, A))
-            Q_uu = r_t + np.dot(B.T, np.dot(V_xx, B))
-            Q_ux = np.dot(B.T, np.dot(V_xx, A))
+            Q_x = q_x_t + np.dot(A_t.T, V_x)
+            Q_u = r_u_t + np.dot(B_t.T, V_x)
+            Q_xx = q_t + np.dot(A_t.T, np.dot(V_xx, A_t))
+            Q_ux = cross_t + np.dot(B_t.T, np.dot(V_xx, A_t))
+            Q_uu = r_t + np.dot(B_t.T, np.dot(V_xx, B_t))
+            
             
             # 添加正则化项以确保Q_uu是正定的
             Q_uu_reg = Q_uu + np.eye(self.num_actions) * self.reg_factor
             
             # 计算反馈增益K和前馈增益k
-            try:
-                k_t = -np.linalg.solve(Q_uu_reg, Q_u)
-                K_t = -np.linalg.solve(Q_uu_reg, Q_ux)
-            except:
-                # 如果无法求解，使用伪逆
-                k_t = -np.dot(np.linalg.pinv(Q_uu_reg), Q_u)
-                K_t = -np.dot(np.linalg.pinv(Q_uu_reg), Q_ux)
+            k_t = -np.linalg.solve(Q_uu_reg, Q_u)
+            K_t = -np.linalg.solve(Q_uu_reg, Q_ux)
             
             k_seq[t] = k_t
             K_seq[t] = K_t
@@ -337,14 +431,43 @@ class iLQRPlanner:
         
         return x_seq_new, u_seq_new
     
-    def plan(self, current_state, dynamics_fn, A, B, target_state=None, init_u_seq=None):
+    def linearize_dynamics(self, dynamics_fn, state, action):
+        """
+        在某个状态(state)和动作(action)点线性化 dynamics_fn，返回 A 和 B 矩阵
+        """
+        # 确保输入是 PyTorch 张量
+        state = torch.tensor(state, dtype=torch.float32, requires_grad=True)
+        action = torch.tensor(action, dtype=torch.float32, requires_grad=True)
+
+        # 定义一个包装函数，确保返回 PyTorch 张量
+        def dynamics_fn_wrapper(s, a):
+            # 调用原始动力学函数
+            next_state = dynamics_fn(s.detach().numpy(), a.detach().numpy())
+            # 将结果转换回 PyTorch 张量
+            return torch.tensor(next_state, dtype=torch.float32)
+
+        # 对 state 求雅可比 A
+        A = torch.autograd.functional.jacobian(
+            lambda s: dynamics_fn_wrapper(s, action), 
+            state
+        )
+        
+        # 对 action 求雅可比 B
+        B = torch.autograd.functional.jacobian(
+            lambda a: dynamics_fn_wrapper(state, a), 
+            action
+        )
+        
+        return A.detach().numpy(), B.detach().numpy()
+
+
+    def plan(self, current_state, dynamics_fn, reward_fn, target_state=None, init_u_seq=None):
         """使用iLQR算法进行规划
         
         参数:
             current_state: 当前状态
             dynamics_fn: 动力学模型函数，接收(state, action)返回next_state
-            A: 状态转移矩阵
-            B: 控制矩阵
+            reward_fn: 奖励模型函数，接收(state, action)返回reward
             target_state: 目标状态，可选
             init_u_seq: 初始控制序列，可选
         
@@ -352,26 +475,35 @@ class iLQRPlanner:
             最优动作（控制序列的第一个动作）
         """
         # 初始化轨迹
+        # u_seq: 控制序列
         if init_u_seq is None:
             u_seq = [np.zeros(self.num_actions) for _ in range(self.planning_horizon)]
         else:
             u_seq = init_u_seq
             
+        # x_seq: 状态序列
         x_seq = [np.zeros(self.num_states) for _ in range(self.planning_horizon + 1)]
         x_seq[0] = current_state
         
         # 使用动力学模型前向预测轨迹
         for t in range(self.planning_horizon):
             x_seq[t+1] = dynamics_fn(x_seq[t], u_seq[t])
-        
-        # 计算初始轨迹的总代价
-        total_cost = np.sum([self.cost_function(x_seq[t], u_seq[t], target_state) for t in range(self.planning_horizon)])
-        total_cost += self.terminal_cost(x_seq[-1], target_state)
-        
+
+        total_cost = np.sum([self.cost_function(x_seq[t], u_seq[t], x_seq[t+1], u_seq[t+1], reward_fn) for t in range(self.planning_horizon-1)])
+        total_cost += self.terminal_cost(x_seq[-1], target_state, reward_fn)
+
         # iLQR迭代
         for it in range(self.max_iter):
+            # 计算A B矩阵
+            A_seq = []
+            B_seq = []
+            for t in range(self.planning_horizon):
+                A_t, B_t = self.linearize_dynamics(dynamics_fn, x_seq[t], u_seq[t])
+                A_seq.append(A_t)
+                B_seq.append(B_t)
+
             # 向后传递
-            k_seq, K_seq = self.backward_pass(x_seq, u_seq, A, B, target_state)
+            k_seq, K_seq = self.backward_pass(x_seq, u_seq, A_seq, B_seq, target_state, reward_fn)
             
             # 线性搜索找到最佳的alpha值
             alpha = 1.0
@@ -382,8 +514,10 @@ class iLQRPlanner:
                 x_seq_new, u_seq_new = self.forward_pass(current_state, u_seq, k_seq, K_seq, dynamics_fn, alpha)
                 
                 # 计算新轨迹的总代价
-                new_cost = np.sum([self.cost_function(x_seq_new[t], u_seq_new[t], target_state) for t in range(self.planning_horizon)])
-                new_cost += self.terminal_cost(x_seq_new[-1], target_state)
+                new_cost = np.sum([self.cost_function(x_seq_new[t], u_seq_new[t], x_seq_new[t+1], u_seq_new[t+1], reward_fn) for t in range(self.planning_horizon-1)])
+                new_cost += self.terminal_cost(x_seq_new[-1], target_state, reward_fn)
+
+                # print(f"new_cost: {new_cost}, total_cost: {total_cost}")
                 
                 # 如果代价降低，接受新轨迹
                 if new_cost < total_cost:
@@ -403,44 +537,9 @@ class iLQRPlanner:
         # 返回规划的第一个动作
         return u_seq[0]
 
-    def plan_random(self, current_state, dynamics_fn, num_samples=1000):
-        """使用随机采样方法进行规划（替代iLQR方法）"""
-        best_action = None
-        best_total_cost = float('inf')
-        
-        # 生成多个随机动作序列
-        for _ in range(num_samples):
-            # 生成随机动作
-            action = np.random.uniform(self.action_low, self.action_high)
-            
-            # 使用动力学模型模拟执行
-            state = current_state.copy()
-            total_cost = 0
-            
-            # 模拟这个动作下的未来几步
-            for t in range(self.planning_horizon):
-                # 如果是第一步，使用生成的随机动作；否则使用随机动作
-                curr_action = action if t == 0 else np.random.uniform(self.action_low, self.action_high)
-                
-                # 计算当前步骤的代价
-                total_cost += self.cost_function(state, curr_action)
-                
-                # 预测下一个状态
-                state = dynamics_fn(state, curr_action)
-            
-            # 添加终端代价
-            total_cost += self.terminal_cost(state)
-            
-            # 更新最佳动作
-            if total_cost < best_total_cost:
-                best_total_cost = total_cost
-                best_action = action
-        
-        return best_action
-
 class ModelBasedRL_NN:
     def __init__(self, num_states, num_actions, planning_horizon=10, model_update_frequency=10, env=None,
-                 hidden_dim=128, lr=1e-3, batch_size=64, train_epochs=5):
+                 hidden_dim=256, lr=1e-3, batch_size=64, train_epochs=5):
         self.num_states = num_states
         self.num_actions = num_actions
         self.planning_horizon = planning_horizon
@@ -455,40 +554,32 @@ class ModelBasedRL_NN:
         self.action_low = env.action_space.low
         self.action_high = env.action_space.high
         
-        # 神经网络动力学模型
-        # self.policy_net = PolicyNet(num_states, num_actions, hidden_dim)
-        # self.q_net = QValueNet(num_states, num_actions, hidden_dim)
-
-        self.model = DynamicsModel(num_states, num_actions, hidden_dim)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # 创建模型并移动到设备
+        self.model = DynamicsModel(num_states, num_actions, hidden_dim, device=self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         
         # 经验回放
         self.experience = []
-        
-        # 线性近似动力学模型参数 (用于iLQR)
-        self.A = None  # 状态转移矩阵
-        self.B = None  # 控制矩阵
-        self.c = None  # 偏置项
         
         # 创建iLQR规划器
         self.planner = iLQRPlanner(
             num_states=num_states,
             num_actions=num_actions,
             planning_horizon=planning_horizon,
+            max_iter=100,
+            convergence_threshold=1e-5,
             action_low=self.action_low,
             action_high=self.action_high
         )
         
-        # 设置设备（CPU/GPU）
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model.to(self.device)
-        
     def train_dynamics_model(self):
         """使用梯度下降训练神经网络动力学模型"""
-        if len(self.experience) < 50:  # 需要足够多的数据
+        if len(self.experience) < 50:
             return False
             
-        # 准备训练数据
+        # 准备训练数据并确保在正确的设备上
         states, actions, next_states, rewards = [], [], [], []
         for s, a, ns, r in self.experience:
             states.append(s)
@@ -496,7 +587,7 @@ class ModelBasedRL_NN:
             next_states.append(ns)
             rewards.append(r)
             
-        # 转换为Tensor
+        # 转换为Tensor并移动到设备
         states = torch.FloatTensor(np.array(states)).to(self.device)
         actions = torch.FloatTensor(np.array(actions)).to(self.device)
         next_states = torch.FloatTensor(np.array(next_states)).to(self.device)
@@ -517,23 +608,26 @@ class ModelBasedRL_NN:
                 
                 # 前向传播
                 pred_next_states, pred_rewards = self.model(batch_states, batch_actions)
-                # pred_next_states = self.model(batch_states, batch_actions)
                 
-                # 计算损失
+                # 计算单步损失
                 state_loss = F.mse_loss(pred_next_states, batch_next_states)
                 reward_loss = F.mse_loss(pred_rewards, batch_rewards)
-                loss = state_loss + reward_loss
-                # loss = state_loss
                 
+                # 总损失 = 单步损失 + rollout损失
+                loss = state_loss + reward_loss
+
                 # 反向传播
                 loss.backward()
+                
+                # 梯度裁剪
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                
                 self.optimizer.step()
                 
                 epoch_loss += loss.item()
             
             total_loss += epoch_loss / len(dataloader)
         
-            
         print(f"Dynamics model training loss: {total_loss / self.train_epochs:.4f}")
         return True
 
@@ -545,72 +639,19 @@ class ModelBasedRL_NN:
         """使用神经网络预测奖励"""
         return self.model.predict_reward(state, action)
     
-    def linearize_dynamics(self, state, action):
-        """
-        线性化神经网络动力学模型，计算 A, B 矩阵和偏置项 c。
-        A应为形状(state_dim, state_dim)的矩阵
-        B应为形状(state_dim, action_dim)的矩阵
-        c应为形状(state_dim,)的向量
-        """
-        self.model.eval()
-        
-        state_tensor = torch.tensor(state, dtype=torch.float32, requires_grad=True, device=self.device).unsqueeze(0)
-        action_tensor = torch.tensor(action, dtype=torch.float32, requires_grad=True, device=self.device).unsqueeze(0)
-        
-        # 预测下一个状态
-        next_state_pred, reward_pred = self.model(state_tensor, action_tensor)
-        
-        # 计算雅可比，并处理维度
-        # jacobian返回形状为 [batch_out, out_dim, batch_in, in_dim]
-        A_full = torch.autograd.functional.jacobian(
-            lambda s: self.model(s, action_tensor),
-            state_tensor
-        )
-        
-        B_full = torch.autograd.functional.jacobian(
-            lambda a: self.model(state_tensor, a),
-            action_tensor
-        )
-        
-        # 移除批次维度，得到[state_dim, state_dim]和[state_dim, action_dim]
-        # PyTorch >= 1.9的处理方式
-        if hasattr(A_full, 'view'):
-            A = A_full.view(self.num_states, self.num_states).detach().cpu().numpy()
-            B = B_full.view(self.num_states, self.num_actions).detach().cpu().numpy()
-        else:
-            # 处理形状为[1, state_dim, 1, state_dim]的情况
-            A = A_full.squeeze(0).squeeze(1).detach().cpu().numpy()
-            B = B_full.squeeze(0).squeeze(1).detach().cpu().numpy()
-        
-        # 打印调试信息
-        # print(f"A_full原始形状: {A_full.shape}")
-        # print(f"A最终形状: {A.shape}, 应为: ({self.num_states}, {self.num_states})")
-        # print(f"B最终形状: {B.shape}, 应为: ({self.num_states}, {self.num_actions})")
-        
-        s_np = state_tensor.detach().cpu().numpy().squeeze()
-        a_np = action_tensor.detach().cpu().numpy().squeeze()
-        f_np = next_state_pred.detach().cpu().numpy().squeeze()
-        c = f_np - A @ s_np - B @ a_np
-        
-        return A, B, c
-
     def plan(self, current_state, target_state=None):
         """使用iLQR或随机采样方法进行规划"""
         # 如果模型未训练充分，返回随机动作
         if len(self.experience) < 50:
             return np.random.uniform(self.action_low, self.action_high)
         
-        # 使用当前状态下的最优动作执行线性化（更新A, B, c）
-        action_guess = np.random.uniform(self.action_low, self.action_high)  # 可用策略初始化动作
-        self.A, self.B, self.c = self.linearize_dynamics(current_state, action_guess)
-        
         # 优先使用iLQR (如果线性近似模型可用)
         dynamics_fn = lambda s, a: self.predict_next_state(s, a)
+        reward_fn = lambda s, a: self.predict_reward(s, a)
         best_action = self.planner.plan(
             current_state=current_state,
             dynamics_fn=dynamics_fn,
-            A=self.A,
-            B=self.B,
+            reward_fn=reward_fn,
             target_state=target_state
         )
         
@@ -624,9 +665,20 @@ class ModelBasedRL_NN:
         # 尝试训练初始模型
         self.train_dynamics_model()
         
+        # 设置目标状态
+        target_state = np.zeros_like(current_state)
+        # 设置目标高度（z坐标）
+        target_state[0] = 1.4  # 目标高度
+        # 设置目标角度（躯干直立）
+        target_state[1] = 0.0  # 目标角度
+        # 设置目标速度（向前移动）
+        target_state[5] = 2.0  # 目标x方向速度
+        # 设置目标角速度（保持稳定）
+        target_state[7] = 0.0  # 目标躯干角速度
+        
         for step in range(num_steps):
             # 1. 规划动作
-            action = self.plan(current_state)
+            action = self.plan(current_state, target_state)
             
             # 2. 执行动作并观察结果
             next_state, reward, terminated, truncated, _ = env.step(action)  # Gymnasium环境的step方法返回5个值
@@ -637,8 +689,9 @@ class ModelBasedRL_NN:
             self.experience.append((current_state, action, next_state, reward))
             
             # 限制经验回放的大小以避免内存问题
-            if len(self.experience) > 10000:
+            if len(self.experience) > 50000:
                 self.experience = self.experience[-5000:]
+                print(f"Experience size: {len(self.experience)}")
             
             # 4. 周期性地训练模型
             if step % self.model_update_frequency == 0:
@@ -647,6 +700,8 @@ class ModelBasedRL_NN:
             # 偶尔打印进度
             if step % 50 == 0:
                 print(f"Step {step}, Cumulative Reward: {total_reward}")
+                print(f"Current x position: {current_state[0]:.2f}, Target x position: {target_state[0]:.2f}")
+                print(f"Current x velocity: {current_state[5]:.2f}, Target x velocity: {target_state[5]:.2f}")
                 
             current_state = next_state
             if done:
@@ -660,8 +715,13 @@ if __name__ == "__main__":
     np.random.seed(0)
     torch.manual_seed(0)
     
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
     # 创建Hopper环境
-    env = gym.make("Hopper-v5")
+    env = gym.make("Hopper-v5", 
+                #    render_mode="human", 
+                   terminate_when_unhealthy=True, 
+                   forward_reward_weight = 10)
     env.reset(seed=0)
     
     # 获取环境信息
@@ -676,7 +736,7 @@ if __name__ == "__main__":
     agent = ModelBasedRL_NN(
         num_states=state_dim, 
         num_actions=action_dim, 
-        planning_horizon=10,              # 规划步数
+        planning_horizon=20,              # 规划步数
         model_update_frequency=10,       # 每10步更新一次模型
         env=env,
         hidden_dim=256,                  # 隐藏层维度
@@ -686,7 +746,7 @@ if __name__ == "__main__":
     )
     
     # 训练过程
-    num_episodes = 100
+    num_episodes = 30
     episode_rewards = []
     
     for episode in range(num_episodes):

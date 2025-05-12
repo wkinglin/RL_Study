@@ -1,0 +1,16 @@
+{
+    "real_ratio": 0.5,
+    "num_episodes": 100,
+    "actor_lr": 0.0001,
+    "critic_lr": 0.005,
+    "alpha_lr": 0.001,
+    "hidden_dim": 128,
+    "gamma": 0.98,
+    "tau": 0.005,
+    "buffer_size": 10000,
+    "target_entropy": -1,
+    "model_alpha": 0.01,
+    "rollout_batch_size": 1000,
+    "rollout_length": 10,
+    "env_name": "Hopper-v5"
+}
