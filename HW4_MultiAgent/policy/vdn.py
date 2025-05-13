@@ -40,6 +40,7 @@ class VDN:
                 self.eval_vdn_net.load_state_dict(torch.load(path_vdn, map_location=map_location))
                 print('Successfully load the model: {} and {}'.format(path_rnn, path_vdn))
             else:
+                print(self.model_dir)
                 raise Exception("No model!")
 
         # 让target_net和eval_net的网络参数相同

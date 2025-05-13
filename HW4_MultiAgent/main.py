@@ -4,7 +4,7 @@ from runner import Runner
 
 if __name__ == "__main__":
     max_cycles = 30
-    env = simple_spread_v3.parallel_env(render_mode="rgb_array", max_cycles=max_cycles)
+    env = simple_spread_v3.parallel_env(render_mode="human", max_cycles=max_cycles)
     env.reset(seed=42)
 
     args = get_common_args()

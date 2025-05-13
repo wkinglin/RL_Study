@@ -32,49 +32,44 @@ class Runner:
     def run(self, num):
         time_steps, train_steps, evaluate_steps = 0, 0, -1
 
-        evaluate_total_steps = self.args.n_steps // self.args.evaluate_cycle
-        for evaluate_steps in tqdm(range(evaluate_total_steps), desc='Training'):
-            # evaluate
-            win_rate, episode_reward = self.evaluate()
-            self.win_rates.append(win_rate)
-            self.episode_rewards.append(episode_reward)
-            self.plt(num)
+        loss_list = []
+        with tqdm(total=self.args.n_steps//self.args.evaluate_cycle*10, desc='Training') as pbar:
+            for time_steps in range(self.args.n_steps):
 
-            # train
-            loss_list = []
-            with tqdm(total=self.args.evaluate_cycle//100, desc='Training') as pbar:
-                for time_steps in range(self.args.evaluate_cycle):
-                    episodes = []
+                if time_steps % self.args.evaluate_cycle == 0:
+                    # evaluate
+                    win_rate, episode_reward = self.evaluate()
+                    self.win_rates.append(win_rate)
+                    self.episode_rewards.append(episode_reward)
+                    self.plt(num)
+                    pbar.update(10)
 
-                    # 收集self.args.n_episodes个episodes
-                    for episode_idx in range(self.args.n_episodes):
-                        episode, _, _, steps = self.rolloutWorker.generate_episode(episode_idx)
-                        episodes.append(episode)
-                        time_steps += steps
+                # train  
+                episodes = []
+                # 收集self.args.n_episodes个episodes
+                for episode_idx in range(self.args.n_episodes):
+                    episode, _, _, steps = self.rolloutWorker.generate_episode(episode_idx)
+                    episodes.append(episode)
+                    time_steps += steps
 
-                    # episode的每一项都是一个(1, episode_len, n_agents, 具体维度)四维数组，下面要把所有episode的的obs拼在一起
-                    episode_batch = episodes[0]
-                    episodes.pop(0)
-                    for episode in episodes:
-                        for key in episode_batch.keys():
-                            episode_batch[key] = np.concatenate((episode_batch[key], episode[key]), axis=0)
+                # episode的每一项都是一个(1, episode_len, n_agents, 具体维度)四维数组，下面要把所有episode的的obs拼在一起
+                episode_batch = episodes[0]
+                episodes.pop(0)
+                for episode in episodes:
+                    for key in episode_batch.keys():
+                        episode_batch[key] = np.concatenate((episode_batch[key], episode[key]), axis=0)
 
-    
-                    if self.args.alg.find('coma') > -1 or self.args.alg.find('central_v') > -1 or self.args.alg.find('reinforce') > -1:
-                        loss = self.agents.train(episode_batch, train_steps, self.rolloutWorker.epsilon)
+                if self.args.alg.find('coma') > -1 or self.args.alg.find('central_v') > -1 or self.args.alg.find('reinforce') > -1:
+                    loss = self.agents.train(episode_batch, train_steps, self.rolloutWorker.epsilon)
+                    loss_list.append(loss)
+                    train_steps += 1
+                else:
+                    self.buffer.store_episode(episode_batch)
+                    for train_step in range(self.args.train_steps):
+                        mini_batch = self.buffer.sample(min(self.buffer.current_size, self.args.batch_size))
+                        loss = self.agents.train(mini_batch, train_steps)
                         loss_list.append(loss)
                         train_steps += 1
-                    else:
-                        self.buffer.store_episode(episode_batch)
-                        for train_step in range(self.args.train_steps):
-                            mini_batch = self.buffer.sample(min(self.buffer.current_size, self.args.batch_size))
-                            loss = self.agents.train(mini_batch, train_steps)
-                            loss_list.append(loss)
-                            train_steps += 1
-                            
-                    # 每100步更新一次进度条
-                    if time_steps % 100 == 0:
-                        pbar.update(1)
             
             # 处理带梯度的张量，使用 detach() 分离梯度
             detached_loss_list = [loss.detach() if hasattr(loss, 'detach') else loss for loss in loss_list]
