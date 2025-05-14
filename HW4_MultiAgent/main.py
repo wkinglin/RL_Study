@@ -1,10 +1,11 @@
 from pettingzoo.mpe import simple_spread_v3
 from common.arguments import get_common_args, get_coma_args, get_centralv_args, get_reinforce_args, get_mixer_args, get_commnet_args, get_g2anet_args
-from runner import Runner
+from runner_old import Runner
+# from runner import Runner
 
 if __name__ == "__main__":
     max_cycles = 30
-    env = simple_spread_v3.parallel_env(render_mode="human", max_cycles=max_cycles)
+    env = simple_spread_v3.parallel_env(render_mode="rgb_array", max_cycles=max_cycles)
     env.reset(seed=42)
 
     args = get_common_args()

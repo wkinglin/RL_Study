@@ -30,17 +30,21 @@ class Runner:
 
     def run(self, num):
         time_steps, train_steps, evaluate_steps = 0, 0, -1
-
-
+        loss_list = []
         while time_steps < self.args.n_steps:
             # if time_steps // self.args.evaluate_cycle > evaluate_steps:
             if time_steps % self.args.evaluate_cycle == 0:
+                print(self.args.evaluate_cycle)
                 print('Run {}, time_steps {}'.format(num, time_steps))
+                # 处理带梯度的张量，使用 detach() 分离梯度
+                detached_loss_list = [loss.detach() if hasattr(loss, 'detach') else loss for loss in loss_list]
+                print('loss_list is ', np.mean(detached_loss_list))
                 win_rate, episode_reward = self.evaluate()
                 # print('win_rate is ', win_rate)
                 self.win_rates.append(win_rate)
                 self.episode_rewards.append(episode_reward)
-                self.plt(num)
+                self.plt(num)           
+                loss_list = []
                 evaluate_steps += 1
             episodes = []
             # 收集self.args.n_episodes个episodes
@@ -56,19 +60,16 @@ class Runner:
                 for key in episode_batch.keys():
                     episode_batch[key] = np.concatenate((episode_batch[key], episode[key]), axis=0)
             if self.args.alg.find('coma') > -1 or self.args.alg.find('central_v') > -1 or self.args.alg.find('reinforce') > -1:
-                self.agents.train(episode_batch, train_steps, self.rolloutWorker.epsilon)
+                loss = self.agents.train(episode_batch, train_steps, self.rolloutWorker.epsilon)
+                loss_list.append(loss)
                 train_steps += 1
             else:
                 self.buffer.store_episode(episode_batch)
-                loss_list = []
                 for train_step in range(self.args.train_steps):
                     mini_batch = self.buffer.sample(min(self.buffer.current_size, self.args.batch_size))
                     loss = self.agents.train(mini_batch, train_steps)
                     loss_list.append(loss)
                     train_steps += 1
-                # 处理带梯度的张量，使用 detach() 分离梯度
-                detached_loss_list = [loss.detach() if hasattr(loss, 'detach') else loss for loss in loss_list]
-                print('loss_list is ', np.mean(detached_loss_list))
         win_rate, episode_reward = self.evaluate()
         print('win_rate is ', win_rate)
         self.win_rates.append(win_rate)

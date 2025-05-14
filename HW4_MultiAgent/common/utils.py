@@ -1,6 +1,8 @@
 import inspect
 import functools
 import torch
+import numpy as np
+import matplotlib.pyplot as plt
 
 
 def store_args(method):
@@ -71,3 +73,41 @@ def td_lambda_target(batch, max_episode_len, q_targets, args):
                                            n_step_return[:, transition_idx, :, max_episode_len - transition_idx - 1]
     # --------------------------------------------------lambda return---------------------------------------------------
     return lambda_return
+
+def load_npy_data(path):
+    data = np.load(path)
+    return data
+
+def draw_plt(num, win_rates, episode_rewards): 
+        evaluate_cycle = 5000
+
+        plt.figure(figsize=(10, 8), dpi=300)  # 设置更大的图形尺寸
+        
+        # plt.subplot(2, 1, 1)
+        # plt.plot(range(len(win_rates)), win_rates)
+        # plt.xlabel('timesteps {}'.format(evaluate_cycle), labelpad=10)  # 增加标签与轴的距离
+        # plt.ylabel('win_rates', labelpad=10)
+        # plt.grid(True, linestyle='--', alpha=0.7)  # 添加网格线
+        # plt.tick_params(axis='both', which='major', labelsize=10)  # 设置刻度标签大小
+
+        plt.subplot(2, 1, 2)
+        x_ticks = [step * 3 for step in range(len(episode_rewards))]
+        plt.plot(x_ticks, episode_rewards)
+        # plt.plot(range(len(episode_rewards)), episode_rewards)
+        plt.xlabel('timesteps {}'.format(evaluate_cycle), labelpad=10)
+        plt.ylabel('episode_rewards', labelpad=10)
+        plt.grid(True, linestyle='--', alpha=0.7)
+        plt.tick_params(axis='both', which='major', labelsize=10)
+
+        plt.tight_layout(pad=2.0)  # 增加子图之间的间距
+
+        plt.savefig("../result/vdn/5m_vs_6m/" + '/plt_{}.png'.format(num), format='png', dpi=300, bbox_inches='tight')
+        plt.close()
+
+if __name__ == "__main__":
+    rewards_data = load_npy_data("../result/vdn/5m_vs_6m/episode_rewards_0.npy")
+    win_rates_data = load_npy_data("../result/vdn/5m_vs_6m/win_rates_0.npy")
+    print(rewards_data)
+    print(win_rates_data)
+    draw_plt(1, win_rates_data, rewards_data)
+    
